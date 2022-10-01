@@ -1,0 +1,27 @@
+1. Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf? 
+Registers a0-a7 (x10-x17) contain functions' arguments. 
+For main's call to printf, a2 holds 13.
+
+2. Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.) 
+(CFLAGS=-O)
+f: the call to function f has been optimized and the compiler leave constant 12 instead of the call to f.
+g: the call to g has been optimized too and the code performs "x+3" in f instead of the call to g.
+(CFLAGS=-O0)
+f: jalr	-50(ra) # 1c <f>
+g: jalr	-48(ra) # 0 <g>
+3. At what address is the function printf located? 
+0x0000000000000630
+
+4. What value is in the register ra just after the jalr to printf in main? 
+jalr	1536(ra) # 630 <printf>
+0x630 - 1536 = 48 = 0x30
+ra = pc = 0x30
+
+5. What is the output?
+He110 World
+Change i to 0x726c6400
+Not need to change 57616.
+
+6. In the following code, what is going to be printed after 'y='? (note: the answer is not a specific value.) Why does this happen?
+x=3 y=1
+The code didn't provice the 2st argument (a2) for printf. Therefore, printf use the old a2 register value.
