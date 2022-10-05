@@ -1,0 +1,6 @@
+Why are there missing keys with 2 threads, but not with 1 thread? Identify a sequence of events with 2 threads that can lead to a key being missing.
+Because the context switching may occur when the put function is searching or putting values, thererfore another thread change the hash table while this thread didn't know.
+Example:
+thread 1: put 1
+thread 2: put NBUCKET + 1
+Context switch to thread 2 when thread 1 found table[1] was empty, NBUCKET+1 was put into table[1], then thread 1 cover the former value.
