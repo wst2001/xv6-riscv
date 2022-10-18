@@ -298,6 +298,27 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 // sz: vitural memory size
+
+int cowcheck(pagetable_t new, pte_t va){
+  
+  pte_t *pte;
+
+  va = PGROUNDDOWN(va);
+  if (va >= MAXVA){
+    printf("cowcheck: va exceed MAXVA\n");
+    return -1;
+  }
+  if((pte = walk(new, va, 0)) == 0){      // get i-th vitural pagetable 
+    printf("cowcheck: pte should exist\n");
+    return -1;
+  }
+  if((*pte & PTE_V) == 0){
+    printf("cowcheck: page not present\n");
+    return -1;
+  }
+  return (*pte) & (PTE_COW);
+}
+
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
@@ -305,15 +326,13 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   uint64 i;
   uint64 pa;
   uint flags;
-  // char *mem;
   //pagetable_t: point to pagetable
   // PTE (page table entry) *pagetable_t + offset
 
   for(i = 0; i < sz; i += PGSIZE){        // seems that va are all together
-    if((pte = walk(old, i, 0)) == 0)      // get i-th vitural pagetable 
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+    if (cowcheck(old, i) < 0)
+      return -1;
+    pte = walk(old, i, 0);                // get i-th vitural pagetable 
     pa = PTE2PA(*pte);
     
     
@@ -339,29 +358,20 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
-int cowcheck(pagetable_t new, pte_t va){
-  if (va > MAXVA)
-    return 0;
-  pte_t *pte;
 
-  va = PGROUNDDOWN(va);
-  if((pte = walk(new, va, 0)) == 0)      // get i-th vitural pagetable 
-    panic("uvmcopy: pte should exist");
-  if((*pte & PTE_V) == 0)
-    return 0;
-  return (*pte) & (PTE_COW);
-}
 
 int uvmcow(pagetable_t new, pte_t va){
   pte_t *pte;
   uint64 pa;
   uint flags;
   char *mem;
+  if (cowcheck(new, va) <= 0)
+    return -1;
   va = PGROUNDDOWN(va);
   if((pte = walk(new, va, 0)) == 0)      // get i-th vitural pagetable 
-    panic("uvmcopy: pte should exist");
+    panic("uvmcow: pte should exist");
   if((*pte & PTE_V) == 0)
-    panic("uvmcopy: page not present");
+    panic("uvmcow: page not present");
   pa = PTE2PA(*pte);
   flags = PTE_FLAGS(*pte);
   acquire_mem_count_lock();
@@ -412,7 +422,11 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     // if COW page
-    if (cowcheck(pagetable, va0) != 0){
+    int checkresult = cowcheck(pagetable, va0);
+    if (checkresult < 0){
+      return -1;
+    }
+    else if (checkresult > 0){
       uvmcow(pagetable, va0);
     }
     pa0 = walkaddr(pagetable, va0);

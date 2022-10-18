@@ -86,7 +86,6 @@ copyout(char *s)
       exit(1);
     }
     close(fd);
-
     int fds[2];
     if(pipe(fds) < 0){
       printf("pipe() failed\n");
