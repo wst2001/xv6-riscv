@@ -63,7 +63,13 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
-
+void            add_mem_count(void *);
+int             get_mem_count(void *);
+void            set_mem_count_no_lock(void *, int);
+void            acquire_mem_count_lock();
+void            release_mem_count_lock();
+void*           kalloc_no_lock(void);
+void            kfree_no_lock(void *);
 // log.c
 void            initlog(int, struct superblock*);
 void            log_write(struct buf*);
@@ -163,6 +169,7 @@ void            uvminit(pagetable_t, uchar *, uint);
 uint64          uvmalloc(pagetable_t, uint64, uint64);
 uint64          uvmdealloc(pagetable_t, uint64, uint64);
 int             uvmcopy(pagetable_t, pagetable_t, uint64);
+int             uvmcow(pagetable_t, pte_t);
 void            uvmfree(pagetable_t, uint64);
 void            uvmunmap(pagetable_t, uint64, uint64, int);
 void            uvmclear(pagetable_t, uint64);

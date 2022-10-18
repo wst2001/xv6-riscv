@@ -148,8 +148,8 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if(*pte & PTE_V)
-      panic("mappages: remap");
+    // if(*pte & PTE_V)
+    //   panic("mappages: remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;
@@ -297,28 +297,41 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
+// sz: vitural memory size
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
-  uint64 pa, i;
+  uint64 i;
+  uint64 pa;
   uint flags;
-  char *mem;
+  // char *mem;
+  //pagetable_t: point to pagetable
+  // PTE (page table entry) *pagetable_t + offset
 
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
+  for(i = 0; i < sz; i += PGSIZE){        // seems that va are all together
+    if((pte = walk(old, i, 0)) == 0)      // get i-th vitural pagetable 
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    
+    
+    (*pte) = (*pte) & (~PTE_W);
+    (*pte) = (*pte) | (PTE_COW);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    if (mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
+    add_mem_count((void *)pa);
+    // no need 
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    // if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    //   kfree(mem);
+    //   goto err;
+    // }
   }
   return 0;
 
@@ -326,7 +339,55 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
+int cowcheck(pagetable_t new, pte_t va){
+  if (va > MAXVA)
+    return 0;
+  pte_t *pte;
 
+  va = PGROUNDDOWN(va);
+  if((pte = walk(new, va, 0)) == 0)      // get i-th vitural pagetable 
+    panic("uvmcopy: pte should exist");
+  if((*pte & PTE_V) == 0)
+    return 0;
+  return (*pte) & (PTE_COW);
+}
+
+int uvmcow(pagetable_t new, pte_t va){
+  pte_t *pte;
+  uint64 pa;
+  uint flags;
+  char *mem;
+  va = PGROUNDDOWN(va);
+  if((pte = walk(new, va, 0)) == 0)      // get i-th vitural pagetable 
+    panic("uvmcopy: pte should exist");
+  if((*pte & PTE_V) == 0)
+    panic("uvmcopy: page not present");
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+  acquire_mem_count_lock();
+  if (get_mem_count((void *)pa) > 1){
+    if((mem = kalloc_no_lock()) == 0)
+      goto err;
+    memmove(mem, (char*)pa, PGSIZE);
+    flags = flags | (PTE_W);
+    flags = flags & (~PTE_COW);
+    if(mappages(new, va, PGSIZE, (uint64)mem, flags) != 0){
+      kfree_no_lock(mem);
+      goto err;
+    }
+    kfree_no_lock((void *) pa);
+  }
+  else{
+    (*pte) = (*pte) | (PTE_W);
+    (*pte) = (*pte) & (~PTE_COW);
+  }
+  release_mem_count_lock();
+  return 0;
+ err:
+  release_mem_count_lock();
+  uvmunmap(new, 0, va / PGSIZE, 1);
+  return -1;
+}
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
 void
@@ -350,6 +411,10 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    // if COW page
+    if (cowcheck(pagetable, va0) != 0){
+      uvmcow(pagetable, va0);
+    }
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
