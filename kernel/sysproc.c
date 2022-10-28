@@ -81,6 +81,34 @@ int
 sys_pgaccess(void)
 {
   // lab pgtbl: your code here.
+  uint64 start_va;
+  int n;
+  uint64 dest_va;
+  pte_t* pte;
+  if(argaddr(0, &start_va) < 0)
+    return -1;
+  if(argint(1, &n) < 0)
+    return -1;
+  if(argaddr(2, &dest_va) < 0)
+    return -1;
+
+  pagetable_t pagetable = myproc()->pagetable;
+  if (pagetable == 0 || n > 32)
+    return -1;
+  if (dest_va + 4 >= MAXVA || start_va + n * PGSIZE >= MAXVA)
+    return -1;
+  uint temp_buf = 0;
+  for (int i = 0; i < n; i ++){
+    if((pte = walk(pagetable, start_va + i * PGSIZE, 0)) == 0)
+      continue;
+    if ((*pte) & PTE_A){
+      temp_buf |= (1 << i);
+      (*pte) = *(pte) & (~PTE_A); // clear PTE_A
+    }
+  }
+  if(copyout(pagetable, dest_va, (char *) &temp_buf, sizeof(uint)) < 0){
+    panic("sys_pgaccess: copyout failed");
+  }
   return 0;
 }
 #endif
