@@ -1,0 +1,27 @@
+Memory allocator:
+    kinit:
+        init N locks
+    freerange:
+        averagely allocate page for each cpu
+    kfree:
+        get id
+        acquire
+        free
+        release
+    kalloc:
+        get id
+        acquire
+        steal
+        release
+
+Buffer cache:
+    binit:
+        init locks
+        build loop link
+    bget:
+        steal
+    bread:
+    bwrite:
+    brelse:
+
+    
