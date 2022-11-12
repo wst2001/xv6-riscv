@@ -86,56 +86,60 @@ bget(uint dev, uint blockno)
 
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
-  int min_time_stamp = 0x7ffffff;
-  struct buf * replace_buf;
+  int min_time_stamp = 0x7fffffff;
+  struct buf * replace_buf = 0;
   for(b = bcache.head[bcache_id].prev; b != &bcache.head[bcache_id]; b = b->prev){
-    if(b->refcnt == 0) {
-      b->time_stamp = ticks;
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock[bcache_id]);
-      acquiresleep(&b->lock);
-      return b;
+    if(b->refcnt == 0 && b->time_stamp < min_time_stamp) {
+      replace_buf = b;
+      min_time_stamp = b->time_stamp;
     }
+  }
+  if (replace_buf){
+    goto found;
   }
 
   // steal cache
-  for (int i = 0; i < NBUCKETS; i ++){
-    if (i == bcache_id)
-      continue;
-    // acquire(&bcache.steallock);
-    acquire(&bcache.lock[i]);
-    for(b = bcache.head[i].prev; b != &bcache.head[i]; b = b->prev){
-
-      if(b->refcnt == 0) {
-        b->dev = dev;
-        b->blockno = blockno;
-        b->valid = 0;
-        b->refcnt = 1;
-
-        // insert and remove
-        struct buf * prevbuf = &bcache.head[bcache_id];
-        struct buf * nextbuf = bcache.head[bcache_id].next;
-        prevbuf->next = b;
-        nextbuf->prev = b;
-        b->prev->next = b->next;
-        b->next->prev = b->prev;
-        b->prev = prevbuf;
-        b->next = nextbuf;
-
-        release(&bcache.lock[i]);
-        release(&bcache.lock[bcache_id]);
-        // release(&bcache.steallock);
-        acquiresleep(&b->lock);
-        return b;
-      }
+  acquire(&bcache.steallock);
+  refind:
+  for (b = bcache.buf; b < bcache.buf + NBUF; b ++){
+    if(b->refcnt == 0 && b->time_stamp < min_time_stamp) {
+      replace_buf = b;
+      min_time_stamp = b->time_stamp;
     }
-    release(&bcache.lock[i]);
-    // release(&bcache.steallock);
   }
-  panic("bget: no buffers");
+
+  if (replace_buf){
+    int replace_id = replace_buf->blockno % NBUCKETS;
+    acquire(&bcache.lock[replace_id]);
+    if (replace_buf->refcnt != 0){
+      release(&bcache.lock[replace_id]);
+      goto refind;
+    }
+    // insert and remove
+    struct buf * prevbuf = &bcache.head[bcache_id];
+    struct buf * nextbuf = bcache.head[bcache_id].next;
+    prevbuf->next = replace_buf;
+    nextbuf->prev = replace_buf;
+    replace_buf->prev->next = replace_buf->next;
+    replace_buf->next->prev = replace_buf->prev;
+    replace_buf->prev = prevbuf;
+    replace_buf->next = nextbuf;
+
+    release(&bcache.lock[replace_id]);
+    release(&bcache.steallock);
+    goto found;
+  }
+  else{
+    panic("bget: no buffers");
+  }
+  found:
+  replace_buf->dev = dev;
+  replace_buf->blockno = blockno;
+  replace_buf->valid = 0;
+  replace_buf->refcnt = 1;
+  release(&bcache.lock[bcache_id]);
+  acquiresleep(&replace_buf->lock);
+  return replace_buf;
 }
 
 // Return a locked buf with the contents of the indicated block.
