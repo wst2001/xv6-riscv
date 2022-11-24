@@ -49,8 +49,8 @@ usertrap(void)
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
-  if(r_scause() == 8){
+  uint64 scause = r_scause();
+  if(scause == 8){
     // system call
 
     if(p->killed)
@@ -65,6 +65,11 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (scause == 13 || scause == 15){
+    if (mmap_handler((pte_t) r_stval(), scause) < 0){
+      p->killed = 1;
+      printf("mmap trap error\n");
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

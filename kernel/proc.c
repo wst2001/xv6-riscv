@@ -313,6 +313,31 @@ fork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+
+  np->vma = 0;
+  struct vma * pv = p->vma;
+  struct vma * npv = np->vma;
+  while (pv){
+    struct vma * v = vma_alloc();
+    v->start = pv->start;
+    v->end = pv->end;
+    v->length = pv->length;
+    v->permission = pv->permission;
+    v->offset = pv->offset;
+    v->flags = pv->flags;
+    v->file = pv->file;
+    filedup(v->file);
+    if (npv == 0){
+      np->vma = v;
+    }
+    else{
+      npv->next = v;
+      v->next = 0;
+    }
+    npv = v;
+    release(&(v->lock));
+    pv = pv->next;
+  }
   release(&np->lock);
 
   return pid;
@@ -344,6 +369,10 @@ exit(int status)
   if(p == initproc)
     panic("init exiting");
 
+  struct vma * pv;
+  while ((pv = p->vma)){
+    apply_munmap(pv->start, pv->length);
+  }
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
@@ -479,8 +508,9 @@ sched(void)
 
   if(!holding(&p->lock))
     panic("sched p->lock");
-  if(mycpu()->noff != 1)
+  if(mycpu()->noff != 1){
     panic("sched locks");
+  }
   if(p->state == RUNNING)
     panic("sched running");
   if(intr_get())

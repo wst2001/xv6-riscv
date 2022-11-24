@@ -484,3 +484,225 @@ sys_pipe(void)
   }
   return 0;
 }
+
+struct vma vma_list[NVMAS];
+void vma_init(){
+  for (int i = 0; i < NVMAS; i ++){
+    initlock(&(vma_list[i].lock), "vma");
+  }
+}
+
+struct vma* vma_alloc(){
+  for (int i = 0; i < NVMAS; i ++){
+    acquire(&(vma_list[i].lock));
+    if (vma_list[i].length == 0){
+      return &(vma_list[i]);
+    }
+    release(&(vma_list[i].lock));
+  }
+  panic("no enough vma");
+}
+
+struct vma * vma_search(pte_t va){
+  struct vma * pv = myproc()->vma;
+  if (pv == 0){
+    return 0;
+  }
+  while (pv){
+    // acquire(&(pv->lock));
+    if ((pv->start <= va) && (va < pv->end)){
+      return pv;
+    }
+    // release(&(pv->lock));
+    pv = pv->next;
+  }
+  return 0;
+}
+int mmap_handler(pte_t va, uint64 scause){
+  struct proc * p = myproc();
+  struct vma * pv;
+  if ((pv = vma_search(va)) == 0){
+    goto bad;
+  }
+  if (scause == 13 && !(pv->permission & PTE_R)){
+    goto bad;
+  }
+  if (scause == 15 && !(pv->permission & PTE_W)){
+    goto bad;
+  }
+  struct file * f = pv->file;
+  va = PGROUNDDOWN(va);
+  char * mem;
+  if ((mem = kalloc()) == 0){
+    kfree(mem);
+    goto bad;
+  }
+  memset(mem, 0, PGSIZE);
+  if (mappages(p->pagetable, va, PGSIZE, (uint64)mem, pv->permission) < 0){
+    goto bad;
+  }
+  ilock(f->ip);
+  if (readi(f->ip, 0, (uint64)mem, (pv->offset + va - pv->start), PGSIZE) < 0){
+    goto bad;
+  }
+  iunlock(f->ip);
+  // release(&(pv->lock));
+  return 0;
+bad:
+  // release(&(pv->lock));
+  return -1;
+}
+uint64
+sys_mmap(void){
+  uint64 addr, fd;
+  int length, prot, flags, offset;
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 || argaddr(4, &fd) < 0 || argint(5, &offset) < 0){
+    return -1;
+  }
+  struct proc *p = myproc();
+  struct vma * v = vma_alloc();
+  struct file * f = p->ofile[fd];
+  int pte_flag = PTE_U;
+  if (prot & PROT_READ){
+    if (!(f->readable)){
+      release(&(v->lock));
+      return -1;
+    }
+    pte_flag |= PTE_R;
+  }
+  if (prot & PROT_WRITE){
+    if (!(f->writable) && !(flags & MAP_PRIVATE)){
+      release(&(v->lock));
+      return -1;
+    }
+    pte_flag |= PTE_W;
+  }
+  v->length = length;
+  v->permission = pte_flag;
+  v->offset = offset;
+  v->flags = flags;
+  v->file = f;
+  filedup(f);
+
+  struct vma * pv = p->vma;
+  if (pv == 0){
+    v->start = VMA_START;
+    v->end = v->start + length;
+    p->vma = v;
+  }
+  else{
+    while (pv->next){
+      pv = pv->next;
+    }
+    v->start = PGROUNDUP(pv->end);
+    v->end = v->start + length;
+    pv->next = v;
+    v->next = 0;
+  }
+  addr = v->start;
+  release(&(v->lock));
+  return addr;
+}
+
+// int writeback(struct vma * v, uint64 addr, int length){
+//   if ((v->flags & MAP_PRIVATE) || !(v->permission & PTE_W)){
+//     return 0;
+//   }
+//   if (addr % PGSIZE != 0){
+//     panic("unmap: no aligned");
+//   }
+//   if (filewrite(v->file, addr, length) < 0){
+//     return -1;
+//   }
+//   return 0;
+// }
+
+void
+writeback(struct vma* v, uint64 addr, int n)
+{
+  if(!(v->permission & PTE_W) || (v->flags & MAP_PRIVATE)) // no need to writeback
+    return;
+
+  if((addr % PGSIZE) != 0)
+    panic("unmap: not aligned");
+
+  struct file* f = v->file;
+
+  int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+  int i = 0;
+  while(i < n){
+    int n1 = n - i;
+    if(n1 > max)
+      n1 = max;
+    begin_op();
+    ilock(f->ip);
+    int r = writei(f->ip, 1, addr + i, v->offset + addr - v->start + i, n1);
+    iunlock(f->ip);
+    end_op();
+    i += r;
+  }
+}
+
+int apply_munmap(uint64 addr, int length){
+  struct proc * p = myproc();
+  struct vma * pv = p->vma;
+  struct vma * v;
+  if ((v = vma_search(addr)) == 0){
+    goto bad;
+  }
+  if (addr != v->start && addr + length != v->end){
+    panic("munmap middle");
+  }
+  uint64 va;
+  for (va = PGROUNDDOWN(addr); va <= addr + length; va += PGSIZE){
+    if (walkaddr(p->pagetable, va) != 0){
+      writeback(v, va, PGSIZE);
+      uvmunmap(p->pagetable, va, 1, 1);
+    }
+  }
+  
+  
+  
+  if (addr == v->start && addr + length == v->end){
+    fileclose(v->file);
+    if (v == pv){
+      p->vma = v->next;
+    }
+    else{
+      struct vma * pre = pv;
+      while (pre->next && pre->next != v){
+        pre = pre->next;
+      }
+      pre->next = pv->next;
+    }
+    acquire(&(v->lock));
+    v->length = 0;
+    v->next = 0;
+    v->flags = 0;
+    v->permission = 0;
+    release(&(v->lock));
+
+  }
+  else if (addr == v->start) {
+    v->start = addr + length;
+    v->length -= length;
+    v->offset += length;
+  }
+  else if (addr + length == v->end){
+    v->end = addr;
+    v->length -= length;
+  }
+  return 0;
+bad:
+  return -1;
+}
+
+uint64
+sys_munmap(void){
+  uint64 addr;
+  int length;
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0){
+    return -1;
+  }
+  return apply_munmap(addr, length);
+}
